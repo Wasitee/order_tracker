@@ -1,0 +1,114 @@
+WITH leadtime AS 
+(
+SELECT
+    spx_sla_date
+    ,shipment_id
+    ,status_flow
+    ,order_type
+    ,CASE 
+        WHEN hub_station IS NULL THEN station_index.station_name ELSE hub_station END AS hub_station
+    ,lag_station
+    ,status_index
+    ,status_name
+    ,lag_status
+    ,IF(date_diff('hour',timestamp_id,lag_timestamp) IS NULL AND status_index NOT IN (3,4,6,11,14,26,51,73,81,96,125,145,146,189,190),date_diff('hour',timestamp_id,current_timestamp),date_diff('hour',timestamp_id,lag_timestamp)) AS leadtime_by_hour
+    ,timestamp_id
+    ,lag_timestamp
+    --  ,hub_station  
+    ,CASE
+        WHEN CAST(hubhub_4pl AS VARCHAR) IN ('Flash','Kerry','Ninja Van') THEN '4PL'
+        WHEN (status_index IN (47,15,233,56,64,235,86) AND lag_status IN (48,36,234,57,65,236,87)) THEN 'LH' 
+        WHEN IF((status_index IN (47,15,233,56,64,235,86) AND lag_status NOT IN (48,36,234,57,65,236,87)),lag_station,hub_station) LIKE 'H%' THEN 'LM'
+        WHEN IF((status_index IN (47,15,233,56,64,235,86) AND lag_status NOT IN (48,36,234,57,65,236,87)),lag_station,hub_station) LIKE 'F%' THEN 'FM'
+        WHEN IF((status_index IN (47,15,233,56,64,235,86) AND lag_status NOT IN (48,36,234,57,65,236,87)),lag_station,hub_station) LIKE 'D%' THEN 'SDOP'
+        WHEN IF((status_index IN (47,15,233,56,64,235,86) AND lag_status NOT IN (48,36,234,57,65,236,87)),lag_station,hub_station) LIKE 'Partner%' THEN 'PS'
+        WHEN IF((status_index IN (47,15,233,56,64,235,86) AND lag_status NOT IN (48,36,234,57,65,236,87)),lag_station,hub_station) LIKE 'SOC%' THEN 'SOC'
+        WHEN IF((status_index IN (47,15,233,56,64,235,86) AND lag_status NOT IN (48,36,234,57,65,236,87)),lag_station,hub_station) IN ('NERC-A','NERC-B','NORC-A','NORC-B','SORC-A','SORC-B','CERC') THEN 'RC'
+        WHEN IF((status_index IN (47,15,233,56,64,235,86) AND lag_status NOT IN (48,36,234,57,65,236,87)),lag_station,hub_station) LIKE 'Shopee%' THEN 'PS'
+        WHEN IF(status_index IN (48,36,234,57,65,236,87),lag_station,hub_station) LIKE 'H%' THEN 'LM'
+        WHEN IF(status_index IN (48,36,234,57,65,236,87),lag_station,hub_station) LIKE 'F%' THEN 'FM'
+        WHEN IF(status_index IN (48,36,234,57,65,236,87),lag_station,hub_station) LIKE 'D%' THEN 'SDOP'
+        WHEN IF(status_index IN (48,36,234,57,65,236,87),lag_station,hub_station) LIKE 'Partner%' THEN 'PS'
+        WHEN IF(status_index IN (48,36,234,57,65,236,87),lag_station,hub_station) LIKE 'SOC%' OR IF(hub_station IS NULL,station_index.station_name,hub_station) LIKE 'Sorting center' THEN 'SOC'
+        WHEN IF(status_index IN (48,36,234,57,65,236,87),lag_station,hub_station) IN ('NERC-A','NERC-B','NORC-A','NORC-B','SORC-A','SORC-B','CERC') THEN 'RC'
+        WHEN IF(status_index IN (48,36,234,57,65,236,87),lag_station,hub_station) LIKE 'Shopee%' THEN 'PS'
+        WHEN IF(hub_station IS NULL,station_index.station_name,hub_station) LIKE 'H%' THEN 'LM'
+        WHEN IF(hub_station IS NULL,station_index.station_name,hub_station) LIKE 'F%' THEN 'FM'
+        WHEN IF(hub_station IS NULL,station_index.station_name,hub_station) LIKE 'D%' THEN 'SDOP'
+        WHEN IF(hub_station IS NULL,station_index.station_name,hub_station) LIKE 'Partner%' THEN 'PS'
+        WHEN IF(hub_station IS NULL,station_index.station_name,hub_station) LIKE 'SOC%' OR IF(hub_station IS NULL,station_index.station_name,hub_station) LIKE 'Sorting center' THEN 'SOC'
+        WHEN IF(hub_station IS NULL,station_index.station_name,hub_station) IN ('NERC-A','NERC-B','NORC-A','NORC-B','SORC-A','SORC-B','CERC') THEN 'RC'
+        WHEN IF(hub_station IS NULL,station_index.station_name,hub_station) LIKE 'Shopee%' THEN 'PS' ELSE NULL END AS pic
+FROM 
+   ( 
+    SELECT 
+        main.shipment_id
+        ,DATE(spx_delivered_sla_timestamp) AS spx_sla_date
+        ,CASE
+            WHEN order_type_id = '0' THEN 'WH'
+            WHEN order_type_id = '1' THEN 'CB'
+            WHEN order_type_id = '12' THEN 'NS'
+            WHEN order_type_id IN ('2','6','9','14','15') THEN 'MKP'
+            WHEN order_type_id IN ('7','8') THEN 'BKY' ELSE NULL END AS order_type
+        ,from_unixtime(main.ctime-3600) AS timestamp_id
+        ,main.status AS status_index
+        ,CASE
+            WHEN status_map.status_name LIKE '%Return%' THEN 'RTN' ELSE 'FWD' END AS status_flow 
+        ,LAG(from_unixtime(main.ctime-3600)) OVER(PARTITION BY main.shipment_id ORDER BY from_unixtime(main.ctime-3600) DESC) AS lag_timestamp
+        ,LAG(station_index.station_name) OVER(PARTITION BY main.shipment_id ORDER BY from_unixtime(main.ctime-3600) DESC) AS lag_station
+        ,LAG(main.status) OVER(PARTITION BY main.shipment_id ORDER BY from_unixtime(main.ctime-3600) DESC) AS lag_status
+        -- ,station_index.station_name AS hub_name1
+        ,status_map.status_name AS status_name
+        ,TRY(JSON_EXTRACT(JSON_PARSE(content), '$.station_id')) AS hubhub
+        ,TRY(JSON_EXTRACT(JSON_PARSE(content), '$.station_name')) AS hubhub_4pl
+        ,CASE 
+            WHEN CAST(TRY(JSON_EXTRACT(JSON_PARSE(content), '$.station_name')) AS VARCHAR) = 'Kerry' THEN 'Kerry'
+            WHEN CAST(TRY(JSON_EXTRACT(JSON_PARSE(content), '$.station_name')) AS VARCHAR) = 'Ninja Van' THEN 'Ninja Van'
+            WHEN CAST(TRY(JSON_EXTRACT(JSON_PARSE(content), '$.station_name')) AS VARCHAR) = 'Flash' THEN 'Flash'
+            WHEN station_index.station_name IS NULL THEN LAG(station_index.station_name) OVER(PARTITION BY main.shipment_id ORDER BY from_unixtime(main.ctime-3600) ASC) ELSE station_index.station_name END AS hub_station  
+    FROM spx_mart.shopee_ssc_spx_track_th_db__order_tracking_tab__reg_continuous_s0_live AS main
+    LEFT JOIN spx_mart.dim_spx_station_tab_ri_th_ro as station_index
+    ON main.station_id = station_index.station_id 
+    LEFT JOIN thopsbi_spx.dwd_pub_shipment_info_df_th AS pub_id
+    ON main.shipment_id = pub_id.shipment_id
+    LEFT JOIN 
+        (
+            SELECT 
+                status
+                ,status_name
+            FROM thopsbi_lof.thspx_fact_order_tracking_di_th
+            GROUP BY status,status_name
+        )   AS status_map
+    ON main.status = status_map.status 
+    WHERE main.shipment_id IN ('SPXTH039685526962','SPXTH039461390652','SPXTH039987576113') AND main.status NOT IN (0,7,30,31,37,38)
+    -- GROUP BY 1,2,3
+    ORDER BY 1 ASC
+   ) AS main
+LEFT JOIN spx_mart.dim_spx_station_tab_ri_th_ro as station_index
+ON CAST(main.hubhub AS DECIMAL) = station_index.station_id 
+)
+
+SELECT 
+    spx_sla_date
+    ,shipment_id
+    ,order_type
+    ,SUM(leadtime_by_hour) FILTER (WHERE status_flow = 'FWD') AS leadtime_fwd 
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = 'SDOP' AND status_flow = 'FWD') AS leadtime_sdop_fwd
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = 'PS' AND status_flow = 'FWD') AS leadtime_ps_fwd
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = 'FM' AND status_flow = 'FWD') AS leadtime_fm_fwd
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = 'RC'AND status_flow = 'FWD') AS leadtime_rc_fwd
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = 'SOC' AND status_flow = 'FWD') AS leadtime_soc_fwd
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = 'LH' AND status_flow = 'FWD') AS leadtime_lh_fwd
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = '4PL' AND status_flow = 'FWD') AS leadtime_4pl_fwd
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = 'LM' AND status_flow = 'FWD') AS leadtime_lm_fwd
+    ,SUM(leadtime_by_hour) FILTER (WHERE status_flow = 'RTN') AS leadtime_rtn 
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = 'SDOP' AND status_flow = 'RTN') AS leadtime_sdop_rtn
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = 'PS' AND status_flow = 'RTN') AS leadtime_ps_rtn
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = 'FM' AND status_flow = 'RTN') AS leadtime_fm_rtn
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = 'RC'AND status_flow = 'RTN') AS leadtime_rc_rtn
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = 'SOC' AND status_flow = 'RTN') AS leadtime_soc_rtn
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = 'LH' AND status_flow = 'RTN') AS leadtime_lh_rtn
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = '4PL' AND status_flow = 'RTN') AS leadtime_4pl_rtn
+    ,SUM(leadtime_by_hour) FILTER (WHERE pic = 'LM' AND status_flow = 'RTN') AS leadtime_lm_rtn
+FROM leadtime
+GROUP BY 1,2,3
