@@ -1,0 +1,134 @@
+WITH main_universe AS 
+(
+    WITH cte_table AS
+    (
+        SELECT 
+            shipment_id
+            ,CASE 
+                WHEN station_name LIKE 'FSATH- สาทร' THEN 'HSATH'
+                WHEN station_name LIKE 'DJOMT-B-จอมทอง' THEN 'HJOMT-B'  
+                WHEN ((station_name LIKE 'F%' OR station_name LIKE 'D%') AND station_name LIKE '-A') THEN CONCAT(CONCAT('H',SUBSTRING(SPLIT_PART(station_name,' -',1),2)),'-A')
+                WHEN ((station_name LIKE 'F%' OR station_name LIKE 'D%') AND station_name LIKE '-B') THEN CONCAT(CONCAT('H',SUBSTRING(SPLIT_PART(station_name,' -',1),2)),'-B')
+                WHEN ((station_name LIKE 'F%' OR station_name LIKE 'D%') AND station_name LIKE '-C') THEN CONCAT(CONCAT('H',SUBSTRING(SPLIT_PART(station_name,' -',1),2)),'-C') 
+                WHEN (station_name LIKE 'F%' OR station_name LIKE 'D%') THEN CONCAT('H',SUBSTRING(SPLIT_PART(station_name,' -',1),2))       
+                ELSE SPLIT_PART(station_name,' -',1) END AS station_name
+            ,status
+            ,status_name
+            ,last_timestamp
+        FROM 
+        (    
+            SELECT 
+                shipment_id
+                ,cte3.station_id
+                ,CASE WHEN staion_index.station_name IS NULL THEN cte3.station_id ELSE staion_index.station_name END AS station_name
+                ,cte3.status
+                ,status_map.status_name
+                ,last_timestamp
+            FROM 
+                (
+                    SELECT 
+                        row_number() OVER(PARTITION BY cte1.shipment_id ORDER BY cte1.ctime DESC) AS row_number
+                        ,cte1.shipment_id
+                        ,CASE 
+                            WHEN cte1.status IN (15,36,64,65) THEN CAST(TRY(JSON_EXTRACT(JSON_PARSE(content),'$.dest_station_name')) AS VARCHAR)
+                            WHEN cte1.status IN (2,5,49,50,119,120,115,116) THEN CAST(cte2.station_id AS VARCHAR) ELSE CAST(cte1.station_id AS VARCHAR) END AS station_id
+                        ,cte1.status
+                        ,FROM_UNIXTIME(cte1.ctime-3600) AS last_timestamp
+                    FROM spx_mart.shopee_ssc_spx_track_th_db__order_tracking_tab__reg_continuous_s0_live AS cte1
+                    LEFT JOIN 
+                        (
+                            SELECT 
+                                shipment_id
+                                ,station_id
+                            FROM 
+                                (
+                                    SELECT
+                                        row_number() OVER(PARTITION BY shipment_id ORDER BY ctime DESC) AS row_number
+                                        ,shipment_id
+                                        ,station_id 
+                                    FROM spx_mart.shopee_ssc_spx_track_th_db__order_tracking_tab__reg_continuous_s0_live
+                                    WHERE status IN (1,10,67) 
+                                )
+                            WHERE row_number = 1
+                        ) AS cte2
+                    ON cte1.shipment_id = cte2.shipment_id
+                    WHERE 
+                        cte1.shipment_id LIKE 'SPXTH%'
+                        AND DATE(FROM_UNIXTIME(cte1.ctime-3600)) BETWEEN DATE(DATE_TRUNC('DAY',CURRENT_TIMESTAMP) - INTERVAL '45' DAY) AND DATE(DATE_TRUNC('DAY',CURRENT_TIMESTAMP))
+                        -- AND cte1.shipment_id = 'SPXTH038145406403'
+                ) AS cte3
+            LEFT JOIN spx_mart.dim_spx_station_tab_ri_th_ro as staion_index
+            ON cte3.station_id = CAST(staion_index.station_id AS VARCHAR)
+            LEFT JOIN 
+                (
+                    SELECT 
+                        status
+                        ,status_name
+                    FROM thopsbi_lof.thspx_fact_order_tracking_di_th
+                    GROUP BY status,status_name
+                )   AS status_map
+            ON cte3.status = status_map.status 
+            WHERE 
+                row_number = 1 
+                AND cte3.status IN (1,2,5,49,50,137,210,210,211,211,15,36,233,64,65,10,52,53,54,55,119,120,124,126,56,39,40,42,43,44,45,46,47,151,179,67,68,69,70,71,115,116,72,74,235) 
+                -- AND station_id NOT IN ('SOCE','Sorting center','NERC-A','NERC-B','NORC-A','NORC-B','SORC-A','SORC-B','CERC','SOCN','SIP-LMHub')  
+        ) 
+    )
+
+    SELECT 
+        shipment_id
+        ,IF(station_index.station_name IS NULL,CONCAT(cte_table.station_name,'-A'),station_index.station_name) AS station_name
+        ,cte_table.status
+        ,status_name
+        ,last_timestamp
+    FROM cte_table  
+    LEFT JOIN 
+        (
+            SELECT 
+                station_name
+            FROM
+                (
+                    SELECT 
+                        CASE 
+                            WHEN station_name LIKE 'FSATH- สาทร' THEN 'HSATH'
+                            WHEN station_name LIKE 'DJOMT-B-จอมทอง' THEN 'HJOMT-B'       
+                            ELSE SPLIT_PART(station_name,' -',1) END AS station_name
+                    FROM spx_mart.dim_spx_station_tab_ri_th_ro
+                )
+            WHERE station_name LIKE 'H%'
+            GROUP BY 1
+        ) AS station_index
+    ON cte_table.station_name = station_index.station_name
+)
+
+SELECT 
+    station_name AS "Hub Name"
+    ,COUNT(station_name) FILTER (WHERE status = 39) AS "FM Module Forward Incoming"
+    ,COUNT(station_name) FILTER (WHERE status = 40) AS "FM Module Forward Inbound"
+    ,COUNT(station_name) FILTER (WHERE status IN (42,43,44,45,46)) AS "FM Module Forward Processing"
+    ,COUNT(station_name) FILTER (WHERE status = 47) AS "FM Module Forward Outbound"
+    ,COUNT(station_name) FILTER (WHERE status IN (39,40,42,43,44,45,46,47)) AS "FM Module Forward Total"
+    ,COUNT(station_name) FILTER (WHERE status = 151) AS "FM Module Return Incoming"
+    ,COUNT(station_name) FILTER (WHERE status = 179) AS "FM Module Return Inbound"
+    ,COUNT(station_name) FILTER (WHERE status IN (67,68,69,70,71,115,116,72,74)) AS "FM Module Return Processing"
+    ,COUNT(station_name) FILTER (WHERE status = 235) AS "FM Module Return Outbound"
+    ,COUNT(station_name) FILTER (WHERE status IN (151,179,67,68,69,70,71,115,116,72,74,235)) AS "FM Module Return Total"
+    ,COUNT(station_name) FILTER (WHERE status IN (39,40,42,43,44,45,46,47,151,179,67,68,69,70,71,115,116,72,74,235)) AS "FM Module All Total"
+
+    ,COUNT(station_name) FILTER (WHERE status = 15) AS "LM Module Forward Incoming"
+    ,COUNT(station_name) FILTER (WHERE status = 36) AS "LM Module Forward Inbound"
+    ,COUNT(station_name) FILTER (WHERE status IN (1,2,5,49,50,137,210,210,211,211)) AS "LM Module Forward Processing"
+    ,COUNT(station_name) FILTER (WHERE status = 233) AS "LM Module Forward Outbound"
+    ,COUNT(station_name) FILTER (WHERE status IN (1,2,5,49,50,137,210,210,211,211,15,36,233)) AS "LM Module Forward Total"
+    ,COUNT(station_name) FILTER (WHERE status = 64) AS "LM Module Return Incoming"
+    ,COUNT(station_name) FILTER (WHERE status = 65) AS "LM Module Return Inbound"
+    ,COUNT(station_name) FILTER (WHERE status IN (10,52,53,54,55,119,120,124,126)) AS "LM Module Return Processing"
+    ,COUNT(station_name) FILTER (WHERE status = 56) AS "LM Module Return Outbound"
+    ,COUNT(station_name) FILTER (WHERE status IN (64,65,10,52,53,54,55,119,120,124,126,56)) AS "LM Module Return Total"
+    ,COUNT(station_name) FILTER (WHERE status IN (1,2,5,49,50,137,210,210,211,211,15,36,233,64,65,10,52,53,54,55,119,120,124,126,56)) AS "LM Module All Total"
+
+    ,COUNT(station_name) FILTER (WHERE status IN (1,2,5,49,50,137,210,210,211,211,15,36,233,64,65,10,52,53,54,55,119,120,124,126,56,39,40,42,43,44,45,46,47,151,179,67,68,69,70,71,115,116,72,74,235)) AS "All Total"
+
+FROM main_universe
+WHERE station_name LIKE 'H%' 
+GROUP BY 1
